@@ -1,0 +1,488 @@
+//
+//  EditRoutineViewController.swift
+//  Routines
+//
+//  Created by Radu on 19/07/2019.
+//  Copyright © 2019 Radu Oprea. All rights reserved.
+//
+
+import UIKit
+import CoreData
+import RecurrencePicker
+import SwiftReorder
+
+class EditRoutineViewController: UIViewController {
+
+    
+    @IBOutlet weak var titleTextView: GrowingTextView!
+    @IBOutlet weak var theTableView: UITableView!
+    @IBOutlet weak var timedRoutineSwitch: UISwitch!
+    @IBOutlet weak var cancelButton: UIBarButtonItem!
+    @IBOutlet weak var reminderLabel: UILabel!
+    @IBOutlet weak var reminderButton: UIButton!
+    
+    private var routine: Routine?
+    private var fetchedResultsController: NSFetchedResultsController<RoutineStep>?
+    private var ignoreNextDataSourceUpdate = false
+    
+    private var hasDataToSave = false
+    private var isNewRoutineBlueprint = false
+    
+    private var tapGestureRecognizer: UITapGestureRecognizer?
+    
+    private var recurrenceRule: RecurrenceRule?
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        theTableView.register(UINib(nibName: "StepSimpleTableViewCell", bundle: nil),
+                              forCellReuseIdentifier: "SimpleStepCell")
+        
+        theTableView.register(UINib(nibName: "StepTextEntryTableViewCell", bundle: nil),
+                              forCellReuseIdentifier: "TextEntryStepCell")
+        
+        theTableView.register(UINib(nibName: "StepChecklistTableViewCell", bundle: nil),
+                              forCellReuseIdentifier: "ChecklistStepCell")
+        
+        theTableView.register(UINib(nibName: "StepAddNewTableViewCell", bundle: nil),
+                              forCellReuseIdentifier: "AddNewStepCell")
+        
+        if routine != nil {
+            fetchedResultsController = Backend.instance.getRoutineStepsFetchedResultsController(forRoutine: routine!)
+            fetchedResultsController?.delegate = self
+        }
+        
+        if !isModal() {
+            self.navigationItem.leftBarButtonItem = nil
+            self.navigationItem.rightBarButtonItem = nil
+        }
+        
+        if !isNewRoutineBlueprint {
+            self.navigationItem.leftBarButtonItem = nil
+        }
+        
+        theTableView.contentInset.top = 15
+        theTableView.contentInset.bottom = 15
+        
+        theTableView.reorder.delegate = self
+        theTableView.reorder.cellScale = 1.05
+        
+        registerForKeyboardNotifications()
+        dismissKeyboardOnTouchOutsideTextFields()
+    }
+    
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        updateUI()
+        if isNewRoutineBlueprint {
+            titleTextView.becomeFirstResponder()
+        }
+    }
+    
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if isNewRoutineBlueprint && !hasDataToSave {
+            // delete the temporary object
+            Backend.instance.delete(object: routine!)
+        } else {
+            routine?.title = titleTextView.text
+            routine?.isTimed = timedRoutineSwitch.isOn
+            
+            Backend.instance.saveDatabaseContext()
+        }
+    }
+    
+    func prepareFor(routine: Routine?) {
+        if routine != nil {
+            self.routine = routine
+            if routine?.rruleString != nil { self.recurrenceRule = RecurrenceRule(rruleString: routine?.rruleString ?? "") }
+        }
+        else {
+            isNewRoutineBlueprint = true
+            // create a temp object
+            self.routine = Backend.instance.createRoutine()
+        }
+    }
+    
+    
+    private func updateUI() {
+        titleTextView?.text = routine?.title
+        timedRoutineSwitch.isOn = routine?.isTimed ?? false
+        reminderLabel.text = recurrenceRule?.toText(occurrenceDate: routine?.firstReminderDate ?? Date()) ?? "No reminder"
+        title = isNewRoutineBlueprint ? "Create New Routine" : "Edit Your Routine"
+    }
+    
+    private func registerForKeyboardNotifications() {
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillChangeFrame(notification:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+    }
+    
+    @objc private func keyboardWillChangeFrame(notification: NSNotification) {
+        if let newFrame = (notification.userInfo?[ UIResponder.keyboardFrameEndUserInfoKey ] as? NSValue)?.cgRectValue {
+            var bottomInset: CGFloat
+            if theTableView.contentInset.bottom <= 50 {
+                //Show Keyboard
+//                insets = UIEdgeInsets(top: 15, left: 0, bottom: newFrame.height, right: 0 )
+                bottomInset = newFrame.height + 15
+                tapGestureRecognizer?.isEnabled = true
+            } else {
+                //Hide Keyboard -> Reset TableView insets
+//                insets = UIEdgeInsets(top: 15, left: 0, bottom: 15, right: 0 )
+                bottomInset = 15
+                tapGestureRecognizer?.isEnabled = false
+            }
+            theTableView.contentInset.bottom = bottomInset
+            theTableView.scrollIndicatorInsets.bottom = bottomInset
+        }
+    }
+    
+    private func dismissKeyboardOnTouchOutsideTextFields() {
+        //Looks for single or multiple taps anywhere outside text fields
+        tapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(EditRoutineViewController.dismissKeyboard))
+        self.view.addGestureRecognizer(tapGestureRecognizer!)
+        tapGestureRecognizer?.isEnabled = false
+    }
+    
+    @objc private func dismissKeyboard() {
+        view.endEditing(true)
+    }
+    
+    private func isModal() -> Bool {
+        return self.presentingViewController?.presentedViewController == self
+            || (self.navigationController != nil && self.navigationController?.presentingViewController?.presentedViewController == self.navigationController)
+            || self.tabBarController?.presentingViewController is UITabBarController
+    }
+    
+    
+    
+    @IBAction func timeRoutineSwitchValueChanged(_ sender: Any) {
+        routine?.isTimed = timedRoutineSwitch.isOn
+        for eachCell in theTableView.visibleCells {
+            if let cell = eachCell as? StepSimpleTableViewCell {
+                cell.setDuration(visible: timedRoutineSwitch.isOn, animated: true)
+            }
+            else if let cell = eachCell as? StepTextEntryTableViewCell {
+                cell.setDuration(visible: timedRoutineSwitch.isOn, animated: true)
+            }
+            else if let cell = eachCell as? StepChecklistTableViewCell {
+                cell.setDuration(visible: timedRoutineSwitch.isOn, animated: true)
+            }
+        }
+    }
+    
+    @IBAction func reminderButtonPressed(_ sender: Any) {
+        performSegue(withIdentifier: "ShowReminderSegue", sender: self)
+    }
+    
+    @IBAction func cancelButtonPressed(_ sender: Any) {
+        dismiss(animated: true, completion: nil)
+    }
+    
+    @IBAction func doneButtonPressed(_ sender: Any) {
+        Backend.instance.askForNotificationsPermissions()
+        dismiss(animated: true, completion: nil)
+    }
+    
+    
+    
+    // MARK: - Navigation
+
+    // In a storyboard-based application, you will often want to do a little preparation before navigation
+    override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
+        // Get the new view controller using segue.destination.
+        // Pass the selected object to the new view controller.
+        if segue.identifier == "ShowReminderSegue", let vc = segue.destination as? RoutineReminderViewController {
+            vc.prepareFor(routine: routine!, occurrenceDate: routine?.firstReminderDate, recurrenceRule: recurrenceRule)
+            vc.valueChangedHandler = { [weak self] occurrenceDate, recurrenceRule in
+                self?.recurrenceRule = recurrenceRule
+                self?.reminderLabel.text = recurrenceRule?.toText(occurrenceDate: occurrenceDate ?? Date())
+            }
+        }
+        else if segue.identifier == "ShowAddStepSegue", let vc = segue.destination as? AddStepViewController {
+            vc.prepareFor(routineBlueprint: routine!)
+        }
+    }
+    
+
+}
+
+extension EditRoutineViewController: NSFetchedResultsControllerDelegate {
+    
+    func controllerWillChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
+        guard ignoreNextDataSourceUpdate == false else { return }
+        theTableView.beginUpdates()
+    }
+    
+    func controller(_ controller: NSFetchedResultsController<NSFetchRequestResult>, didChange anObject: Any, at indexPath: IndexPath?, for type: NSFetchedResultsChangeType, newIndexPath: IndexPath?) {
+        guard ignoreNextDataSourceUpdate == false else { return }
+        
+        switch (type) {
+        case .insert:
+            if let indexPath = newIndexPath {
+                theTableView.insertRows(at: [indexPath], with: .fade)
+            }
+            break;
+        case .delete:
+            if let indexPath = indexPath {
+                theTableView.deleteRows(at: [indexPath], with: .fade)
+            }
+            break;
+        case .update:
+            if let indexPath = indexPath, let routineStep = anObject as? RoutineStep {
+                if let cell = theTableView.cellForRow(at: indexPath) as? StepSimpleTableViewCell {
+                    cell.prepareFor(routineStep: routineStep)
+                    cell.setDuration(visible: routine?.isTimed ?? false, animated: false)
+                    cell.stepNumberLabel.text = "\(indexPath.row+1)."
+                }
+                else if let cell = theTableView.cellForRow(at: indexPath) as? StepTextEntryTableViewCell {
+                    cell.prepareFor(routineStep: routineStep)
+                    cell.setDuration(visible: routine?.isTimed ?? false, animated: false)
+                    cell.stepNumberLabel.text = "\(indexPath.row+1)."
+                }
+                else if let cell = theTableView.cellForRow(at: indexPath) as? StepChecklistTableViewCell {
+                    cell.prepareFor(routineStep: routineStep)
+                    cell.setDuration(visible: routine?.isTimed ?? false, animated: false)
+                    cell.stepNumberLabel.text = "\(indexPath.row+1)."
+                }
+            }
+            break;
+            
+        case .move:
+            if let indexPath = indexPath, let newIndexPath = newIndexPath {
+                theTableView.moveRow(at: indexPath, to: newIndexPath)
+            }
+        default:
+            break
+        }
+        
+    }
+    
+    func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
+        if !ignoreNextDataSourceUpdate {
+            theTableView.endUpdates()
+        }
+        ignoreNextDataSourceUpdate = false
+    }
+}
+
+extension EditRoutineViewController: UITableViewDataSource {
+    
+    func numberOfSections(in tableView: UITableView) -> Int {
+        return 1
+    }
+    
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        guard let steps = fetchedResultsController?.fetchedObjects else { return 0 }
+        return steps.count + 1
+    }
+    
+    
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        return UITableView.automaticDimension
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        
+        if let spacer = tableView.reorder.spacerCell(for: indexPath) {
+            return spacer
+        }
+        
+        if indexPath.row == fetchedResultsController?.fetchedObjects?.count {
+            let cell = tableView.dequeueReusableCell(withIdentifier: "AddNewStepCell", for: indexPath) as! StepAddNewTableViewCell
+            return cell
+        }
+        
+        guard let stepType = StepBlueprintType(rawValue: fetchedResultsController?.fetchedObjects?[indexPath.row].type ?? -1) else {
+            return UITableViewCell()
+        }
+        
+        switch stepType {
+        case .simple:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "SimpleStepCell", for: indexPath) as! StepSimpleTableViewCell
+            if let routineStep = fetchedResultsController?.fetchedObjects?[indexPath.row] {
+                cell.prepareFor(routineStep: routineStep)
+                cell.setDuration(visible: routine?.isTimed ?? false, animated: false)
+                cell.stepNumberLabel.text = "\(indexPath.row+1)."
+                cell.cellDelegate = self
+            }
+            return cell
+        case .textEntry:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "TextEntryStepCell", for: indexPath) as! StepTextEntryTableViewCell
+            if let routineStep = fetchedResultsController?.fetchedObjects?[indexPath.row] {
+                cell.prepareFor(routineStep: routineStep)
+                cell.setDuration(visible: routine?.isTimed ?? false, animated: false)
+                cell.stepNumberLabel.text = "\(indexPath.row+1)."
+                cell.cellDelegate = self
+            }
+            return cell
+        case .checklist:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "ChecklistStepCell", for: indexPath) as! StepChecklistTableViewCell
+            if let routineStep = fetchedResultsController?.fetchedObjects?[indexPath.row] {
+                cell.prepareFor(routineStep: routineStep)
+                cell.setDuration(visible: routine?.isTimed ?? false, animated: false)
+                cell.stepNumberLabel.text = "\(indexPath.row+1)."
+                cell.cellDelegate = self
+            }
+            return cell
+        }
+        
+    }
+    
+    
+    func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool {
+        return true
+    }
+    
+    func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
+        if (editingStyle == UITableViewCell.EditingStyle.delete) {
+            guard let object = fetchedResultsController?.fetchedObjects?[indexPath.row] else { return }
+            Backend.instance.delete(object: object)
+        }
+    }
+    
+}
+
+extension EditRoutineViewController: TableViewReorderDelegate {
+    
+    func tableView(_ tableView: UITableView, canReorderRowAt indexPath: IndexPath) -> Bool {
+        return (indexPath.row != fetchedResultsController?.fetchedObjects?.count)
+    }
+    
+    func tableView(_ tableView: UITableView, targetIndexPathForReorderFromRowAt sourceIndexPath: IndexPath, to proposedDestinationIndexPath: IndexPath) -> IndexPath {
+        let nextStepsCount = fetchedResultsController?.fetchedObjects?.count ?? 0
+        return (proposedDestinationIndexPath.section == 0 && proposedDestinationIndexPath.row < nextStepsCount)
+            ? proposedDestinationIndexPath
+            : IndexPath(row: nextStepsCount - 1, section: 0)
+    }
+    
+    func tableView(_ tableView: UITableView, reorderRowAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
+        
+        // as this method is called after each row swap, we can simply swap the positionID between the moved rows
+        ignoreNextDataSourceUpdate = true
+        let sourceObject = fetchedResultsController?.object(at: sourceIndexPath)
+        let sourcePositionId = sourceObject?.positionId
+        
+        let nextObject = fetchedResultsController?.object(at: destinationIndexPath)
+        let destinationPositionId = nextObject?.positionId
+        
+        fetchedResultsController?.object(at: sourceIndexPath).positionId = destinationPositionId!
+        fetchedResultsController?.object(at: destinationIndexPath).positionId = sourcePositionId!
+        
+        Backend.instance.saveDatabaseContext()
+    }
+    
+    func tableViewDidFinishReordering(_ tableView: UITableView, from initialSourceIndexPath: IndexPath, to finalDestinationIndexPath: IndexPath) {
+        updateStepNumbers()
+    }
+    
+    private func updateStepNumbers() {
+        for index in 0..<(fetchedResultsController?.fetchedObjects?.count ?? 0) {
+            let indexPath = IndexPath(row: index, section: 0)
+            if let destinationCell = theTableView.cellForRow(at: indexPath)
+                , let step = fetchedResultsController?.object(at: indexPath)
+                , let destinationObjectType = StepBlueprintType(rawValue: step.type) {
+                
+                switch destinationObjectType {
+                case .simple:
+                    if let destinationCell = destinationCell as? StepSimpleTableViewCell {
+                        destinationCell.stepNumberLabel.text = "\(indexPath.row+1)."
+                    }
+                case .textEntry:
+                    if let destinationCell = destinationCell as? StepTextEntryTableViewCell {
+                        destinationCell.stepNumberLabel.text = "\(indexPath.row+1)."
+                    }
+                case .checklist:
+                    if let destinationCell = destinationCell as? StepChecklistTableViewCell {
+                        destinationCell.stepNumberLabel.text = "\(indexPath.row+1)."
+                    }
+                }
+            }
+        }
+    }
+    
+}
+
+extension EditRoutineViewController: UITableViewDelegate {
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        if indexPath.row == fetchedResultsController?.fetchedObjects?.count {
+            performSegue(withIdentifier: "ShowAddStepSegue", sender: self)
+//            showAddStepActionSheet()
+        }
+        /*else if let itemCell = tableView.cellForRow(at: indexPath) as? StepSimpleTableViewCell {
+            itemCell.toggleCompleted(animated: true)
+        }
+        else if let itemCell = tableView.cellForRow(at: indexPath) as? StepTextEntryTableViewCell {
+            itemCell.toggleCompleted(animated: true)
+        }
+        else if let itemCell = tableView.cellForRow(at: indexPath) as? StepChecklistTableViewCell {
+            itemCell.toggleCompleted(animated: true)
+        }*/
+    }
+    
+    
+    private func showAddStepActionSheet() {
+        let optionMenu = UIAlertController(title: nil, message: "What type of step do you want to add?", preferredStyle: .actionSheet)
+        
+        let simpleAction = UIAlertAction(title: "Simple Step", style: .default) { [weak self] action in
+            self?.addStep(type: .simple)
+        }
+        let textEntryAction = UIAlertAction(title: "Text Entry", style: .default) { [weak self] action in
+            self?.addStep(type: .textEntry)
+        }
+        let checklistAction = UIAlertAction(title: "Checklist", style: .default) { [weak self] action in
+            self?.addStep(type: .checklist)
+        }
+        
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        
+        optionMenu.addAction(simpleAction)
+        optionMenu.addAction(textEntryAction)
+        optionMenu.addAction(checklistAction)
+        optionMenu.addAction(cancelAction)
+        
+        self.present(optionMenu, animated: true, completion: nil)
+    }
+    
+    private func addStep(type: StepBlueprintType) {
+        guard routine != nil else { return }
+        _ = Backend.instance.createRoutineStep(forRoutine: routine!, type: type)
+    }
+    
+}
+
+extension EditRoutineViewController: UITextViewDelegate {
+    
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        
+        guard text.rangeOfCharacter(from: CharacterSet.newlines) == nil else {
+            view.endEditing(true)
+            return false
+        }
+        
+        if textView == titleTextView {
+            let newText = (textView.text as NSString).replacingCharacters(in: range, with: text)
+            let numberOfChars = newText.count
+            
+            if numberOfChars > 0 {
+                hasDataToSave = true
+            } else {
+                hasDataToSave = false
+            }
+            
+            return numberOfChars <= 50
+        }
+        return true
+    }
+    
+}
+
+extension EditRoutineViewController: GrowingTableViewCellDelegate {
+    func updateRowHeight(_ cell: UITableViewCell, _ textView: UITextView?) {
+        UIView.setAnimationsEnabled(false)
+        theTableView?.beginUpdates()
+        theTableView?.endUpdates()
+        UIView.setAnimationsEnabled(true)
+        if let thisIndexPath = theTableView.indexPath(for: cell) {
+            theTableView.scrollToRow(at: thisIndexPath, at: .bottom, animated: false)
+        }
+    }
+}
